@@ -8,11 +8,13 @@ class SoraClient extends EventTargetPolyfill {
   constructor(
     signalingUrls,
     channelId,
+    userDisplayName,
     options = {}
   ) {
     super();
     this.debug = false;
     this.channelId = channelId;
+    this.userDisplayName = userDisplayName;
     this.options = options;
 
     this.sora = Sora.connection(signalingUrls, this.debug);
@@ -27,11 +29,26 @@ class SoraClient extends EventTargetPolyfill {
   }
 
   async connect(stream) {
-    const jwt = await this.createAccessToken();
-    if (jwt) {
-      this.connection.metadata = {
-        access_token: jwt,
-      };
+    const response = await this.createAccessToken();
+    // eslint-disable-next-line camelcase
+    const {metadata, signaling_notify_metadata} = response;
+    if (metadata) {
+      this.connection.metadata = Object.assign({}, metadata);
+      if (metadata.channel_id) {
+        // Fix channelId for meeting.dev
+        this.connection.channelId = metadata.channel_id;
+        this.channelId = metadata.channel_id;
+      }
+    }
+    // eslint-disable-next-line camelcase
+    if (signaling_notify_metadata) {
+      this.connection.options = Object.assign(
+          this.connection.options,
+          {
+            // eslint-disable-next-line camelcase
+            signalingNotifyMetadata: signaling_notify_metadata,
+          }
+      );
     }
     // 接続する
     await this.connection.connect(stream);
@@ -60,9 +77,19 @@ class SoraClient extends EventTargetPolyfill {
 
   async createAccessToken() {
     try {
-      const res = await fetch('/ep_webrtc/create-access-token', {channelId: this.channelId});
+      const req = {
+        channelId: this.channelId,
+        userDisplayName: this.userDisplayName,
+      };
+      const res = await fetch('/ep_webrtc/create-access-token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(req),
+      });
       if (!res.ok) throw new Error('fetch error', res);
-      return await res.text();
+      return await res.json();
     } catch (err) {
       return null;
     }

@@ -341,6 +341,7 @@ exports.rtc = new class {
           debug(`*track stored stream ${clientId}`);
           this.getPeerConnection(from).trackStream(remoteStream);
           this._pendingRemoteStreams.delete(clientId);
+          this.updateSpotlightRids();
         }
       }
     } else if (this._activated && from !== this.getUserId() &&
@@ -365,6 +366,50 @@ exports.rtc = new class {
     const color = typeof colorId === 'number' ? clientVars.colorPalette[colorId] : colorId;
     $videoContainer.css({borderLeftColor: color});
     ($videoContainer.data('updateMinSize') || (() => {}))();
+  }
+
+  updateSpotlightRids() {
+    const updateSpotlightRidsHandler = (timeout) => {
+      const myClientId = this._soraClient.clientId;
+      const otherClientIds = Array.from(this._clientIdToUserId.keys())
+          .filter((id) => id !== myClientId);
+      const changeSpotlightRidRequest = {
+        // eslint-disable-next-line camelcase
+        item_list: otherClientIds.map((clientId) => ({
+          // eslint-disable-next-line camelcase
+          send_connection_id: clientId,
+          // eslint-disable-next-line camelcase
+          spotlight_focus_rid: 'r0',
+          // eslint-disable-next-line camelcase
+          spotlight_unfocus_rid: 'r0',
+        })),
+        // eslint-disable-next-line camelcase
+        recv_connection_id: myClientId,
+      };
+      fetch(`/ep_webrtc/${this._soraClient.channelId}/change-spotlight-rid`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(changeSpotlightRidRequest),
+      })
+          .then((res) => {
+            if (!res.ok) {
+              // retry after timeout * 2 milliseconds later
+              console.warn(
+                  `Failed to change spotlight rid: ${res.status} ${res.statusText},` +
+                  ` will retry after ${timeout * 2}ms`
+              );
+              setTimeout(() => updateSpotlightRidsHandler(timeout * 2), timeout * 2);
+              return;
+            }
+            return res.json();
+          })
+          .then((data) => {
+            debug(`change spotlight rid result: ${JSON.stringify(data)}`);
+          });
+    };
+    setTimeout(() => updateSpotlightRidsHandler(500), 500);
   }
 
   showUserMediaError(err) { // show an error returned from getUserMedia
@@ -544,7 +589,8 @@ exports.rtc = new class {
           // initialize sora client
           this._soraClient = new SoraClient(
               this._settings.signalingUrls,
-              `${this._pad.getPadId()}@${this._settings.projectId}`
+              `${this._pad.getPadId()}@${this._settings.projectId}`,
+              this.getUserId()
           );
           this._soraClient.addEventListener('track', (e) => {
             const remoteStream = e.detail.streams[0];
@@ -557,6 +603,7 @@ exports.rtc = new class {
             }
             debug(`*find user id ${userId} of stream ${remoteStream.id}`);
             this.getPeerConnection(userId).trackStream(remoteStream);
+            this.updateSpotlightRids();
           });
           await this._soraClient.connect(this._localTracks.stream);
           debug(`*sora client connected, my clientid is ${this._soraClient.clientId}`);

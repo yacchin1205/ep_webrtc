@@ -55,6 +55,9 @@ const defaultSettings = {
   createAccessTokenType: 'jwt',
   // The URL to create an access token for the signaling server.
   createAccessTokenUrl: null,
+  // The URL to change the spotlight RID.
+  // {channelId} will be replaced with the channel ID.
+  changeSpotlightRidUrl: null,
 };
 let settings = null;
 let socketio;
@@ -191,8 +194,7 @@ exports.loadSettings = async (hookName, {settings: {ep_webrtc: s = {}}}) => {
   }, {depth: Infinity}));
 };
 
-const createSoraCompliantJWTToken = (apiKey, req, res) => {
-  const {channelId} = req.params;
+const createSoraCompliantJWTToken = (apiKey, channelId, res) => {
   (new SignJWT({
     channel_id: channelId,
   })
@@ -200,7 +202,11 @@ const createSoraCompliantJWTToken = (apiKey, req, res) => {
       .setExpirationTime('30s')
       .sign(new TextEncoder().encode(apiKey)))
       .then((jwt) => {
-        res.send(jwt);
+        res.send({
+          metadata: {
+            access_token: jwt,
+          },
+        });
       })
       .catch((err) => {
         console.error(
@@ -214,17 +220,20 @@ const createSoraCompliantJWTToken = (apiKey, req, res) => {
       });
 };
 
-const fetchMeetingDevAccessToken = (apiKey, req, res) => {
-  const {channelId} = req.params;
+const fetchMeetingDevAccessToken = (apiKey, channelId, userDisplayName, res) => {
   const url = settings.createAccessTokenUrl;
   if (!url) {
-    logger.error('createAccessTokenUrl is not set');
+    logger.error(
+        '[ep_webrtc]',
+        'createAccessTokenUrl is not set',
+    );
     return res.status(500).send({
       error: 'createAccessTokenUrl is not set',
     });
   }
   const body = new URLSearchParams();
-  body.append('roomTitle', `ep_webrtc/${channelId}`);
+  body.append('channel_name', `ep_webrtc/${channelId}`);
+  body.append('user_display_name', userDisplayName);
   fetch(url, {
     method: 'POST',
     headers: {
@@ -234,18 +243,70 @@ const fetchMeetingDevAccessToken = (apiKey, req, res) => {
   })
       .then((response) => {
         if (!response.ok) {
-          logger.error('Error fetching access token:', response.statusText);
+          if (response.status === 401) {
+            logger.error(
+                '[ep_webrtc]',
+                'Authorization failed. Check your API key.',
+            );
+            return res.status(401).send({
+              error: 'Unauthorized',
+            });
+          }
+          logger.error(
+              '[ep_webrtc]',
+              'Error fetching access token:',
+              response.status,
+              response.statusText,
+          );
           return res.status(500).send({
             error: 'Error fetching access token',
           });
         }
-        return response.text();
-      })
-      .then((token) => {
-        res.send(token);
+        response.json()
+            .then((data) => {
+              logger.info(
+                  '[ep_webrtc]',
+                  'Access token created successfully',
+              );
+              // TODO Retrieve the device info from the client
+              res.send({
+                metadata: Object.assign({}, data, {
+                  is_screen_share: false,
+                  user_agent: 'ep_webrtc',
+                  recv_only: false,
+                  has_camera_device: true,
+                  camera_label: '',
+                  has_mic_device: true,
+                  mic_label: '',
+                }),
+                signaling_notify_metadata: {
+                  display_name: userDisplayName,
+                  is_screen_share: false,
+                  mute_audio: false,
+                  mute_video: false,
+                  photo: '',
+                  recvonly: false,
+                  user_id: 0,
+                },
+              });
+            })
+            .catch((err) => {
+              logger.error(
+                  '[ep_webrtc]',
+                  'Error parsing access token:',
+                  err.stack || err.message || String(err),
+              );
+              res.status(500).send({
+                error: 'Error parsing access token',
+              });
+            });
       })
       .catch((err) => {
-        logger.error('Error fetching access token:', err);
+        logger.error(
+            '[ep_webrtc]',
+            'Error fetching access token:',
+            err.stack || err.message || String(err),
+        );
         res.status(500).send({
           error: 'Error fetching access token',
         });
@@ -255,11 +316,30 @@ const fetchMeetingDevAccessToken = (apiKey, req, res) => {
 exports.expressCreateServer = (hookName, args, cb) => {
   logger.info('expressCreateServer');
   const {app} = args;
-  app.get('/ep_webrtc/create-access-token', (req, res) => {
+  app.post('/ep_webrtc/create-access-token', (req, res) => {
+    console.log(
+        '[ep_webrtc]',
+        'create-access-token',
+        req.body,
+    );
+    const {channelId} = req.body || {};
+    if (!channelId) {
+      logger.error('Missing channelId');
+      return res.status(400).send({
+        error: 'Missing channelId',
+      });
+    }
     const createAccessTokenType = settings?.createAccessTokenType ?? 'jwt';
     const apiKey = settings?.apiKey ?? '';
     if (createAccessTokenType === 'jwt') {
-      return createSoraCompliantJWTToken(apiKey, req, res);
+      return createSoraCompliantJWTToken(apiKey, channelId, res);
+    }
+    const {userDisplayName} = req.body || {};
+    if (!userDisplayName) {
+      logger.error('Missing userDisplayName');
+      return res.status(400).send({
+        error: 'Missing userDisplayName',
+      });
     }
     if (createAccessTokenType !== 'meeting.dev') {
       logger.error('Invalid createAccessTokenType:', createAccessTokenType);
@@ -267,7 +347,91 @@ exports.expressCreateServer = (hookName, args, cb) => {
         error: 'Invalid createAccessTokenType',
       });
     }
-    return fetchMeetingDevAccessToken(apiKey, req, res);
+    return fetchMeetingDevAccessToken(apiKey, channelId, userDisplayName, res);
+  });
+  app.post('/ep_webrtc/:channelId/change-spotlight-rid', (req, res) => {
+    // eslint-disable-next-line camelcase
+    const {item_list, recv_connection_id} = req.body;
+    // eslint-disable-next-line camelcase
+    if (!item_list || !recv_connection_id) {
+      logger.error('Missing item_list or recv_connection_id');
+      return res.status(400).send({
+        error: 'Missing item_list or recv_connection_id',
+      });
+    }
+    const changeSpotlightRidUrl = settings?.changeSpotlightRidUrl ?? null;
+    if (!changeSpotlightRidUrl) {
+      return res.status(200).send({
+        changes: 'none',
+      });
+    }
+    const {channelId} = req.params;
+    console.log(
+        '[ep_webrtc]',
+        'change_spotlight_rid',
+        channelId,
+        req.body,
+    );
+    const body = {
+      // eslint-disable-next-line camelcase
+      item_list,
+      // eslint-disable-next-line camelcase
+      recv_connection_id,
+    };
+    const apiKey = settings?.apiKey ?? '';
+    const url = changeSpotlightRidUrl.replace('{channelId}', channelId);
+    fetch(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(body),
+        },
+    )
+        .then((response) => {
+          if (!response.ok) {
+            logger.error(
+                '[ep_webrtc]',
+                'Error changing spotlight rid:',
+                response.status,
+                response.statusText,
+            );
+            return res.status(500).send({
+              error: 'Error changing spotlight rid',
+            });
+          }
+          response.json()
+              .then((data) => {
+                logger.info(
+                    '[ep_webrtc]',
+                    'Change spotlight rid successfully',
+                );
+                res.send(data);
+              })
+              .catch((err) => {
+                logger.error(
+                    '[ep_webrtc]',
+                    'Error changing spotlight rid:',
+                    err.stack || err.message || String(err),
+                );
+                res.status(500).send({
+                  error: 'Error changing spotlight rid',
+                });
+              });
+        })
+        .catch((err) => {
+          logger.error(
+              '[ep_webrtc]',
+              'Error changing spotlight rid:',
+              err.stack || err.message || String(err),
+          );
+          res.status(500).send({
+            error: 'Error changing spotlight rid',
+          });
+        });
   });
   return cb();
 };
