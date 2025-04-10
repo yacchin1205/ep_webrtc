@@ -50,6 +50,11 @@ const defaultSettings = {
   signalingUrls: [''],
   projectId: '',
   apiKey: '',
+  // The type of access token to create.
+  // Supported values are 'jwt' and 'meeting.dev'.
+  createAccessTokenType: 'jwt',
+  // The URL to create an access token for the signaling server.
+  createAccessTokenUrl: null,
 };
 let settings = null;
 let socketio;
@@ -186,31 +191,83 @@ exports.loadSettings = async (hookName, {settings: {ep_webrtc: s = {}}}) => {
   }, {depth: Infinity}));
 };
 
+const createSoraCompliantJWTToken = (apiKey, req, res) => {
+  const {channelId} = req.params;
+  (new SignJWT({
+    channel_id: channelId,
+  })
+      .setProtectedHeader({alg: 'HS256', typ: 'JWT'})
+      .setExpirationTime('30s')
+      .sign(new TextEncoder().encode(apiKey)))
+      .then((jwt) => {
+        res.send(jwt);
+      })
+      .catch((err) => {
+        console.error(
+            '[ep_webrtc]',
+            'Error occurred',
+            err.stack || err.message || String(err),
+        );
+        res.status(500).send({
+          error: err.toString(),
+        });
+      });
+};
+
+const fetchMeetingDevAccessToken = (apiKey, req, res) => {
+  const {channelId} = req.params;
+  const url = settings.createAccessTokenUrl;
+  if (!url) {
+    logger.error('createAccessTokenUrl is not set');
+    return res.status(500).send({
+      error: 'createAccessTokenUrl is not set',
+    });
+  }
+  const body = new URLSearchParams();
+  body.append('roomTitle', `ep_webrtc/${channelId}`);
+  fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body,
+  })
+      .then((response) => {
+        if (!response.ok) {
+          logger.error('Error fetching access token:', response.statusText);
+          return res.status(500).send({
+            error: 'Error fetching access token',
+          });
+        }
+        return response.text();
+      })
+      .then((token) => {
+        res.send(token);
+      })
+      .catch((err) => {
+        logger.error('Error fetching access token:', err);
+        res.status(500).send({
+          error: 'Error fetching access token',
+        });
+      });
+};
+
 exports.expressCreateServer = (hookName, args, cb) => {
   logger.info('expressCreateServer');
   const {app} = args;
-  app.get('/ep_webrtc/generate_jwt', (req, res) => {
+  app.get('/ep_webrtc/create-access-token', (req, res) => {
+    const createAccessTokenType = settings?.createAccessTokenType ?? 'jwt';
     const apiKey = settings?.apiKey ?? '';
-    const {channelId} = req.params;
-    (new SignJWT({
-      channel_id: channelId,
-    })
-        .setProtectedHeader({alg: 'HS256', typ: 'JWT'})
-        .setExpirationTime('30s')
-        .sign(new TextEncoder().encode(apiKey)))
-        .then((jwt) => {
-          res.send(jwt);
-        })
-        .catch((err) => {
-          console.error(
-              '[ep_webrtc]',
-              'Error occurred',
-              err.stack || err.message || String(err),
-          );
-          res.status(500).send({
-            error: err.toString(),
-          });
-        });
+    if (createAccessTokenType === 'jwt') {
+      return createSoraCompliantJWTToken(apiKey, req, res);
+    }
+    if (createAccessTokenType !== 'meeting.dev') {
+      logger.error('Invalid createAccessTokenType:', createAccessTokenType);
+      return res.status(500).send({
+        error: 'Invalid createAccessTokenType',
+      });
+    }
+    return fetchMeetingDevAccessToken(apiKey, req, res);
   });
   return cb();
 };

@@ -27,8 +27,7 @@ class SoraClient extends EventTargetPolyfill {
   }
 
   async connect(stream) {
-    // SecretKey が指定されていたら JWT を生成して metadata に設定する
-    const jwt = await this.generateJwt();
+    const jwt = await this.createAccessToken();
     if (jwt) {
       this.connection.metadata = {
         access_token: jwt,
@@ -59,9 +58,9 @@ class SoraClient extends EventTargetPolyfill {
     }
   }
 
-  async generateJwt() {
+  async createAccessToken() {
     try {
-      const res = await fetch('/ep_webrtc/generate_jwt', {channelId: this.channelId});
+      const res = await fetch('/ep_webrtc/create-access-token', {channelId: this.channelId});
       if (!res.ok) throw new Error('fetch error', res);
       return await res.text();
     } catch (err) {
