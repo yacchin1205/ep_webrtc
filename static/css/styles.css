@@ -96,8 +96,23 @@
   height: 28px;
 }
 
-#rtcbox .interface-btn.audio-btn:before { content: '\e83d'; }
-#rtcbox .interface-btn.audio-btn.muted:before { content: '\e83e'; }
+#rtcbox .interface-btn.audio-btn:before {
+  font-family: "fontawesome-ep_webrtc";
+  content: '\e802';
+}
+#rtcbox .interface-btn.audio-btn.muted:before {
+  font-family: "fontawesome-ep_webrtc";
+  content: '\e801';
+}
+
+#rtcbox .local-user .interface-btn.audio-btn:before {
+  font-family: "fontawesome-etherpad";
+  content: '\e83d';
+}
+#rtcbox .local-user .interface-btn.audio-btn.muted:before {
+  font-family: "fontawesome-etherpad";
+  content: '\e83e';
+}
 
 #rtcbox .interface-btn.video-btn:before { content: '\e83b'; }
 #rtcbox .interface-btn.video-btn.off:before { content: '\e83c'; }
