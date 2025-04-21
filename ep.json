@@ -14,7 +14,9 @@
       },
       "client_hooks": {
         "handleClientMessage_RTC_MESSAGE": "ep_webrtc/static/js",
+        "handleClientMessage_CUSTOM": "ep_webrtc/static/js",
         "postAceInit": "ep_webrtc/static/js",
+        "aceEditEvent": "ep_webrtc/static/js",
         "userJoinOrUpdate": "ep_webrtc/static/js",
         "userLeave": "ep_webrtc/static/js"
       }

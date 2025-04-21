@@ -111,6 +111,33 @@ const handleRTCMessage = (socket, payload) => {
   }
 };
 
+/**
+ * Handles a CUSTOM Message
+ * based on https://github.com/ether/ep_cursortrace/blob/main/handleMessage.js
+ * @param socket The socket.io Socket object for the client that sent the message.
+ * @param payload the message from the client
+ */
+const handleCustomMessage = (socket, payload) => {
+  const {[socket.id]: {author: userId, padId} = {}} = sessioninfos;
+  if (userId == null || padId == null) return;
+  const msg = {
+    type: 'COLLABROOM',
+    data: {
+      type: 'CUSTOM',
+      payload: {
+        action: 'cursor',
+        from: payload.myAuthorId,
+        pad: payload.padId,
+        data: {
+          x: payload.locationX,
+          y: payload.locationY,
+        },
+      },
+    },
+  };
+  socket.to(padId).emit('message', msg);
+};
+
 // Make sure any updates to this are reflected in README
 const statErrorNames = [
   'Abort',
@@ -141,6 +168,10 @@ exports.handleMessage = async (hookName, {message, socket}) => {
   }
   if (message.type === 'STATS' && message.data.type === 'RTC_MESSAGE') {
     handleErrorStatMessage(message.data.statName);
+    return [null];
+  }
+  if (message.type === 'COLLABROOM' && message.data.action === 'cursorPosition') {
+    handleCustomMessage(socket, message.data);
     return [null];
   }
 };

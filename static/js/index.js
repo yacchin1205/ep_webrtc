@@ -168,6 +168,172 @@ class PeerState extends EventTargetPolyfill {
   }
 }
 
+class FocusManager {
+  constructor(rtc) {
+    this._rtc = rtc;
+    this._isVisible = true;
+    this._myUserId = null;
+    this._cursorPositions = new Map();
+  }
+
+  get _settings() {
+    return clientVars.ep_webrtc;
+  }
+
+  get _isMuted() {
+    return !this._isVisible;
+  }
+
+  activate(myUserId) {
+    this._myUserId = myUserId;
+    $(window).on('visibilitychange', () => {
+      debug('visibility changed', document.visibilityState);
+      this._isVisible = document.visibilityState === 'visible';
+      this._update(true);
+    });
+    if (enableDebugLogging) {
+      $('body').append($('<div>')
+          .attr('id', 'rtc-audio-focus')
+          .css({
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            backgroundColor: 'red',
+            color: 'white',
+            zIndex: 10000,
+          })
+          .text('Audio focus'));
+    }
+  }
+
+  deactivate() {
+    $(window).off('visibilitychange');
+    $('#rtc-audio-focus').remove();
+  }
+
+  updateCursorPosition(userId, position) {
+    const oldPosition = this._cursorPositions.get(userId);
+    if (oldPosition != null && oldPosition.x === position.x &&
+        oldPosition.y === position.y) return;
+    this._cursorPositions.set(userId, position);
+    debug('update cursor position', userId, position);
+    this._update(false);
+  }
+
+  _update(visibilityChanged) {
+    const audioVolumes = this._computeAudioVolumes();
+    if (enableDebugLogging) {
+      $('#rtc-audio-focus').text(
+          `Audio focus: visible: ${this._isVisible}, isMuted: ${this._isMuted}`
+      );
+    }
+    if (!visibilityChanged) {
+      $('.video-container:not(.local-user)').each((i, container) => {
+        const $container = $(container);
+        const video = $container.find('video')[0];
+        if (video == null) return;
+        if (video.muted) return;
+        const userId = $container.attr('id').replace('container_video_', '').replace(/_/g, '.');
+        const volume = audioVolumes.get(userId);
+        if (volume == null) {
+          video.volume = 1;
+          return;
+        }
+        video.volume = volume;
+        debug('set volume', userId, volume);
+      });
+      return;
+    }
+    let updateNeeded = false;
+    let needUnmute = false;
+    let rid = 'r0';
+    if (this._isMuted) {
+      this._rtc._selfViewButtons.audio.enabled = false;
+      this._rtc._selfViewButtons.video.enabled = false;
+      updateNeeded = true;
+      $('.video-container:not(.local-user)').each((i, container) => {
+        const $container = $(container);
+        const video = $container.find('video')[0];
+        if (video == null) return;
+        video.muted = true;
+        video.volume = 0;
+      });
+      rid = 'none';
+    } else {
+      if (this._rtc._selfViewButtons.video.userEnabled == null ||
+          this._rtc._selfViewButtons.video.userEnabled) {
+        this._rtc._selfViewButtons.video.enabled = true;
+        updateNeeded = true;
+      }
+      if (this._rtc._selfViewButtons.audio.userEnabled == null ||
+          this._rtc._selfViewButtons.audio.userEnabled) {
+        this._rtc._selfViewButtons.audio.enabled = true;
+        updateNeeded = true;
+      }
+      $('.video-container:not(.local-user)').each((i, container) => {
+        const $container = $(container);
+        const video = $container.find('video')[0];
+        if (video == null) return;
+        const audioBtn = $container.find('.audio-btn');
+        const userAudioEnabled = audioBtn.data('userEnabled');
+        if (userAudioEnabled != null) {
+          video.muted = !userAudioEnabled;
+        } else {
+          video.muted = false;
+        }
+        if (video.muted) {
+          video.volume = 0;
+          return;
+        }
+        const userId = $container.attr('id').replace('container_video_', '').replace(/_/g, '.');
+        const volume = audioVolumes.get(userId);
+        if (volume == null) {
+          video.volume = 1;
+          return;
+        }
+        video.volume = volume;
+      });
+      needUnmute = true;
+    }
+    this._rtc.updateSpotlightRids(rid);
+    if (needUnmute) {
+      this._rtc.unmuteAndPlayAll()
+          .then(() => {
+            debug('unmuted and played all videos');
+          })
+          .catch((err) => {
+            debug('failed to unmute and play all videos', err);
+            logErrorToServer(err);
+          });
+    }
+    if (!updateNeeded) {
+      return;
+    }
+    this._rtc.updateLocalTracks({updateVideo: true, updateAudio: true})
+        .then(() => {
+          debug('updated local tracks');
+        })
+        .catch((err) => {
+          debug('failed to update local tracks', err);
+          logErrorToServer(err);
+        });
+  }
+
+  _computeAudioVolumes(decayFactor = 0.1) {
+    const volumes = new Map();
+    const myPosition = this._cursorPositions.get(this._myUserId);
+    if (myPosition == null) return volumes;
+    this._cursorPositions.forEach((position, userId) => {
+      if (userId === this._myUserId) return;
+      const distance = Math.max(0, Math.abs(myPosition.y - position.y) - 5); // 5行以内は無視
+      const volume = Math.exp(-decayFactor * distance);
+      volumes.set(userId, volume);
+    });
+    debug('audio volumes', volumes);
+    return volumes;
+  }
+}
+
 // Periods in element IDs make it hard to build a selector string because period is for class match.
 const getVideoId = (userId) => `video_${userId.replace(/\./g, '_')}`;
 
@@ -224,6 +390,8 @@ exports.rtc = new class {
     this._selfViewButtons = {};
     // When grabbing both locks the audio lock must be grabbed first to avoid deadlock.
     this._trackLocks = {audio: new Mutex(), video: new Mutex()};
+    // The audio focus manager is used to mute the local audio when the user is not focused on
+    this._focusManager = new FocusManager(this);
   }
 
   get enableDebugLogging() { return enableDebugLogging; }
@@ -368,7 +536,7 @@ exports.rtc = new class {
     ($videoContainer.data('updateMinSize') || (() => {}))();
   }
 
-  updateSpotlightRids() {
+  updateSpotlightRids(rid = 'r0') {
     const updateSpotlightRidsHandler = (timeout) => {
       const myClientId = this._soraClient.clientId;
       const otherClientIds = Array.from(this._clientIdToUserId.keys())
@@ -379,9 +547,9 @@ exports.rtc = new class {
           // eslint-disable-next-line camelcase
           send_connection_id: clientId,
           // eslint-disable-next-line camelcase
-          spotlight_focus_rid: 'r0',
+          spotlight_focus_rid: rid,
           // eslint-disable-next-line camelcase
-          spotlight_unfocus_rid: 'r0',
+          spotlight_unfocus_rid: rid,
         })),
         // eslint-disable-next-line camelcase
         recv_connection_id: myClientId,
@@ -615,9 +783,11 @@ exports.rtc = new class {
       })();
     }
     await this._activated;
+    this._focusManager.activate(this.getUserId());
   }
 
   async deactivate(awaitActivated = true) {
+    this._focusManager.deactivate();
     const $checkbox = $('#options-enablertc');
     $checkbox.prop('checked', false);
     if (awaitActivated) await this._activated;
@@ -648,6 +818,24 @@ exports.rtc = new class {
       $checkbox.prop('disabled', false);
     }
     debug('deactivated');
+  }
+
+  aceEditEvent(hookName, context, cb) {
+    const {selStart} = context.rep || {};
+    if (!selStart) return cb();
+    if (!this._pad) return cb();
+    this._focusManager.updateCursorPosition(this.getUserId(), {
+      x: selStart[1],
+      y: selStart[0],
+    });
+    cb();
+  }
+
+  handleClientMessage_CUSTOM(hookName, {payload: {action, from, pad, data}}) {
+    if (action !== 'cursor') return;
+    if (pad !== this._pad.getPadId()) return;
+    debug(`(peer ${from}) received custom message`, data);
+    this._focusManager.updateCursorPosition(from, data);
   }
 
   getUserFromId(userId) {
@@ -808,6 +996,18 @@ exports.rtc = new class {
             .toggleClass('muted', !val)
             .attr('title', val ? 'Mute' : 'Unmute');
       },
+      get userEnabled() {
+        return $audioBtn.data('userEnabled');
+      },
+      set userEnabled(val) {
+        // Indicate that the user has explicitly enabled/disabled the audio button.
+        // This is used to determine whether to enable the audio when the window is restored
+        // after being minimized.
+        $audioBtn.data('userEnabled', val);
+        $audioBtn
+            .toggleClass('muted', !val)
+            .attr('title', val ? 'Mute' : 'Unmute');
+      },
     };
     if (isLocal) this._selfViewButtons.audio = audioInterface;
     const audioHardDisabled = isLocal && this._settings.audio.disabled === 'hard';
@@ -824,7 +1024,7 @@ exports.rtc = new class {
         $video.removeData('automuted');
         const muted = audioInterface.enabled;
         _debug(`audio button clicked to ${muted ? 'dis' : 'en'}able audio`);
-        audioInterface.enabled = !muted;
+        audioInterface.userEnabled = !muted;
         if (isLocal) await this.updateLocalTracks({updateAudio: true});
         else $video[0].muted = muted;
         // Do not use `await` when calling unmuteAndPlayAll() because unmuting is best-effort
@@ -847,6 +1047,18 @@ exports.rtc = new class {
       this._selfViewButtons.video = {
         get enabled() { return !$videoBtn.hasClass('off'); },
         set enabled(val) {
+          $videoBtn
+              .toggleClass('off', !val)
+              .attr('title', val ? 'Disable video' : 'Enable video');
+        },
+        get userEnabled() {
+          return $videoBtn.data('userEnabled');
+        },
+        set userEnabled(val) {
+          // Indicate that the user has explicitly enabled/disabled the video button.
+          // This is used to determine whether to enable the video when the window is restored
+          // after being minimized.
+          $videoBtn.data('userEnabled', val);
           $videoBtn
               .toggleClass('off', !val)
               .attr('title', val ? 'Disable video' : 'Enable video');
@@ -876,7 +1088,7 @@ exports.rtc = new class {
         click: async () => {
           const videoEnabled = !this._selfViewButtons.video.enabled;
           _debug(`video button clicked to ${videoEnabled ? 'en' : 'dis'}able video`);
-          this._selfViewButtons.video.enabled = videoEnabled;
+          this._selfViewButtons.video.userEnabled = videoEnabled;
           // Unconditionally disable screen sharing. Either the camera was previously disabled in
           // which case the user now wants to share camera video, or the camera was previously
           // enabled in which case the user now wants to shut off all video.
@@ -1224,7 +1436,9 @@ exports.rtc = new class {
 
 for (const hookFn of [
   'handleClientMessage_RTC_MESSAGE',
+  'handleClientMessage_CUSTOM',
   'postAceInit',
+  'aceEditEvent',
   'userJoinOrUpdate',
   'userLeave',
 ]) {
