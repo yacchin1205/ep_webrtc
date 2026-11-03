@@ -25,6 +25,19 @@ or everyone has fast Internet connections) but not for large groups.
   git clone https://github.com/ether/ep_webrtc
   ```
 
+## Always-on display mode
+
+Open Etherpad as an installed web app to keep the screen on while using a pad.
+If prompted, select **OK** to enable always-on display mode. The screen stays
+on while the app is visible, even when you are not typing or speaking.
+
+Your Etherpad site must support installation as a web app. Use your browser's
+app installation menu, or **Add to Home Screen** on iPad, then launch the app.
+On iPad, this feature requires iPadOS 18.4 or later.
+
+When you switch to another app, screen-on mode is released. It resumes when
+you return to the pad; if prompted again, select **OK**.
+
 ## Settings
 
 ### Plugin On/Off

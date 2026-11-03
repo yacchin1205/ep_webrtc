@@ -17,6 +17,7 @@
 
 const SoraClient = require('./soraClient');
 const VoiceActivityDetector = require('./voiceActivityDetector');
+const ScreenWakeLock = require('./screenWakeLock');
 require('./adapter');
 const padcookie = require('ep_etherpad-lite/static/js/pad_cookie').padcookie;
 
@@ -311,6 +312,37 @@ exports.rtc = new class {
         checkboxId: '#options-videoenabledonstart',
       });
     }
+
+    const keepScreenOn = ScreenWakeLock.isStandalone(window) ||
+        ['true', 'YES'].includes(new URLSearchParams(window.location.search)
+            .get('webrtckeepscreenon'));
+    const $wakePrompt = $('<section>').addClass('popup-content')
+        .attr({'id': 'rtc-wake-prompt', 'aria-labelledby': 'rtc-wake-title'}).hide()
+        .appendTo('body');
+    $('<h1>').attr({'id': 'rtc-wake-title', 'data-l10n-id': 'ep_webrtc_wake_title'})
+        .text(html10n.get('ep_webrtc_wake_title')).appendTo($wakePrompt);
+    const $wakeMessage = $('<p>').attr({'aria-live': 'polite'}).appendTo($wakePrompt);
+    const $wakeButton = $('<button>').addClass('btn btn-primary').attr({'type': 'button',
+      'data-l10n-id': 'ep_webrtc_wake_start'}).text(html10n.get('ep_webrtc_wake_start'))
+        .appendTo($wakePrompt);
+    let wakeAttempted = false;
+    this._screenWakeLock = new ScreenWakeLock(navigator, document, (state, error) => {
+      this._screenWakeLockState = state;
+      debug('screen wake lock:', state, error);
+      const needsAction = keepScreenOn && ['denied', 'released', 'unsupported'].includes(state) &&
+          document.visibilityState === 'visible';
+      $wakePrompt.toggle(needsAction);
+      if (!needsAction) return;
+      const key = state === 'unsupported' ? 'ep_webrtc_wake_unsupported'
+        : wakeAttempted && state === 'denied' ? 'ep_webrtc_wake_retry' : 'ep_webrtc_wake_prompt';
+      $wakeMessage.attr('data-l10n-id', key).text(html10n.get(key));
+      $wakeButton.toggle(state !== 'unsupported');
+    });
+    $wakeButton.on('click', async () => {
+      wakeAttempted = true;
+      await this._screenWakeLock.update();
+    });
+    await this._screenWakeLock.setEnabled(keepScreenOn);
 
     if (this._settings.listenClass) {
       $(this._settings.listenClass).on('click', async () => {

@@ -14,5 +14,10 @@
     "ep_webrtc_error_otherCantAccess": "Sorry, the browser doesn't have access to your camera and/or microphone. Please check permissions in your browser's settings. This is most likely not a hardware error:",
 
     "ep_webrtc_settings_audioenabledonstart": "Audio ON at Start",
-    "ep_webrtc_settings_videoenabledonstart": "Video ON at Start"
+    "ep_webrtc_settings_videoenabledonstart": "Video ON at Start",
+    "ep_webrtc_wake_title": "Always-on display mode",
+    "ep_webrtc_wake_prompt": "Prevent the screen from turning off while you are not interacting with it.",
+    "ep_webrtc_wake_start": "OK",
+    "ep_webrtc_wake_retry": "Could not keep the screen awake.\nSelect OK to try again.",
+    "ep_webrtc_wake_unsupported": "This browser cannot prevent the screen from turning off. You can still edit and talk."
 }
